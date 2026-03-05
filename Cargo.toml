@@ -18,7 +18,7 @@ serde_json = "1.0"
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
 
 # SQLite 数据库
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "json"] }
 
 # HTTP 客户端
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip", "brotli", "deflate", "stream"] }
