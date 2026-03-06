@@ -37,9 +37,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json",
 tracing-appender = "0.2"
 
 # 工具
-uuid = { version = "1.21", features = ["v4", "serde"] }
+uuid = { version = "1.22", features = ["v4", "serde"] }
 derive_more = { version = "2.1", features = ["display", "from"] }
 async-trait = "0.1"
 
 # 密码哈希
 argon2 = { version = "0.5", features = ["std"] }
+
+# 速率限制

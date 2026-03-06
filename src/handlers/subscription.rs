@@ -1,3 +1,7 @@
+//! 订阅处理器模块
+//!
+//! 处理订阅合并和获取，包含 SSRF 防护和 HTML 解析功能。
+
 use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
@@ -14,7 +18,14 @@ use crate::error::AppError;
 use crate::error::AppResult;
 use crate::state::AppState;
 
-// SSRF Protection: 检查 URL 是否解析到私有地址
+/// 检查 URL 是否安全（SSRF 防护）
+///
+/// 验证 URL 是否会解析到私有或本地地址。
+/// 阻止以下地址类型：
+/// - 127.0.0.0/8（本地回环）
+/// - 10.0.0.0/8、172.16.0.0/12、192.168.0.0/16（私有 IPv4）
+/// - fc00::/7（唯一本地地址 IPv6）
+/// - fe80::/10（链路本地 IPv6）
 fn is_safe_url(url_str: &str) -> bool {
     let url = match Url::parse(url_str) {
         Ok(u) => u,
@@ -26,13 +37,10 @@ fn is_safe_url(url_str: &str) -> bool {
         None => return false,
     };
 
-    // 尝试解析主机名
-    // 注意：这将执行 DNS 查询，可能会有点慢。
-    // 生产环境中最好有缓存或专门的 DNS 解析器，或者使用 allowlist。
     let port = url.port_or_known_default().unwrap_or(80);
     let socket_addrs = match (host, port).to_socket_addrs() {
         Ok(iter) => iter,
-        Err(_) => return false, // 无法解析也视为不安全
+        Err(_) => return false,
     };
 
     for addr in socket_addrs {
@@ -42,18 +50,13 @@ fn is_safe_url(url_str: &str) -> bool {
         }
         match ip {
             std::net::IpAddr::V4(ipv4) => {
-                // Check private ranges
-                // 10.0.0.0/8
-                // 172.16.0.0/12
-                // 192.168.0.0/16
-                // 169.254.0.0/16
                 if ipv4.is_private() || ipv4.is_link_local() {
                     return false;
                 }
             }
             std::net::IpAddr::V6(ipv6) => {
                 if (ipv6.segments()[0] & 0xfe00) == 0xfc00 {
-                    return false; // Unique local address (ULA)
+                    return false; // ULA
                 }
                 if (ipv6.segments()[0] & 0xffc0) == 0xfe80 {
                     return false; // Link-local
@@ -65,6 +68,10 @@ fn is_safe_url(url_str: &str) -> bool {
     true
 }
 
+/// 合并指定用户的订阅
+///
+/// 获取用户的所有订阅链接，并发请求并合并内容。
+/// 如果响应是 HTML，会自动转换为纯文本。
 pub async fn merged_user(
     Path(username): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -89,12 +96,11 @@ pub async fn merged_user(
         ).into_response());
     }
 
-    let concurrent_limit = 10; // 默认并发限制
+    let concurrent_limit = state.fetch_config.concurrent_limit;
 
     let fetches = futures::stream::iter(links.into_iter().enumerate().map(|(idx, link)| {
         let client = state.client.clone();
         async move {
-            // SSRF Check
             if !is_safe_url(&link) {
                 return (idx, format!("<!-- blocked unsafe url: {} -->", link), false);
             }
@@ -126,7 +132,6 @@ pub async fn merged_user(
     let mut parts: Vec<(usize, String)> = fetches
         .then(|(idx, body, is_html)| async move {
             if is_html {
-                // 使用 tokio::task::spawn_blocking 替代 actix_web::block
                 let text = tokio::task::spawn_blocking(move || html_to_text(&body))
                     .await
                     .unwrap_or_else(|_| String::new());
@@ -145,16 +150,19 @@ pub async fn merged_user(
     parts.sort_by_key(|(i, _)| *i);
     let ordered: Vec<String> = parts.into_iter().map(|(_, s)| s).collect();
     let full_text = ordered.join("\n\n");
+
     Ok((
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         full_text,
     ).into_response())
 }
 
+/// 将 HTML 转换为纯文本
+///
+/// 提取 HTML 文档中的文本内容，过滤掉 script、style 等标签。
 fn html_to_text(input: &str) -> String {
     let document = Html::parse_document(input);
     let mut buffer = String::new();
-    // 使用 Selector 获取所有元素节点
     let root_selector = Selector::parse(":root").unwrap();
     if let Some(root) = document.select(&root_selector).next() {
         walk_element(root, &mut buffer);
@@ -162,8 +170,8 @@ fn html_to_text(input: &str) -> String {
     buffer.trim().to_string()
 }
 
+/// 递归遍历 HTML 元素并提取文本
 fn walk_element(element: ElementRef, buffer: &mut String) {
-    // 处理元素开始标签
     let name = element.value().name();
     if name == "script" || name == "style" || name == "head" {
         return;
@@ -174,7 +182,6 @@ fn walk_element(element: ElementRef, buffer: &mut String) {
         buffer.push('\n');
     }
 
-    // 处理子节点
     for child in element.children() {
         match child.value() {
             Node::Text(text) => {
@@ -187,7 +194,6 @@ fn walk_element(element: ElementRef, buffer: &mut String) {
                 }
             }
             Node::Element(_) => {
-                // 递归处理子元素
                 if let Some(child_elem) = ElementRef::wrap(child) {
                     walk_element(child_elem, buffer);
                 }
@@ -196,12 +202,12 @@ fn walk_element(element: ElementRef, buffer: &mut String) {
         }
     }
 
-    // 处理元素结束标签
     if is_block_element(name) {
         ensure_newlines(buffer, 2);
     }
 }
 
+/// 确保缓冲区有指定数量的换行符
 fn ensure_newlines(buffer: &mut String, n: usize) {
     if buffer.is_empty() {
         return;
@@ -212,6 +218,7 @@ fn ensure_newlines(buffer: &mut String, n: usize) {
     }
 }
 
+/// 判断 HTML 标签是否为块级元素
 fn is_block_element(tag: &str) -> bool {
     matches!(
         tag,

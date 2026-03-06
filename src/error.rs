@@ -1,3 +1,7 @@
+//! 错误处理模块
+//!
+//! 定义应用错误类型和统一的错误响应格式。
+
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -5,14 +9,21 @@ use axum::{
 };
 use serde_json::json;
 
+/// 应用结果类型别名
 pub type AppResult<T> = Result<T, AppError>;
 
+/// 应用错误类型
 #[derive(Debug)]
 pub enum AppError {
+    /// 数据库错误
     DbError(sqlx::Error),
+    /// 内部错误
     InternalError(String),
-    BadRequest(String),
+    /// 验证错误
+    ValidationError { field: String, message: String },
+    /// 未授权
     Unauthorized,
+    /// 资源未找到
     NotFound(String),
 }
 
@@ -23,7 +34,9 @@ impl std::fmt::Display for AppError {
         match self {
             AppError::DbError(e) => write!(f, "Database error: {}", e),
             AppError::InternalError(msg) => write!(f, "Internal server error: {}", msg),
-            AppError::BadRequest(msg) => write!(f, "Invalid input: {}", msg),
+            AppError::ValidationError { field, message } => {
+                write!(f, "Validation error on field '{}': {}", field, message)
+            }
             AppError::Unauthorized => write!(f, "Unauthorized"),
             AppError::NotFound(msg) => write!(f, "Not found: {}", msg),
         }
@@ -44,14 +57,22 @@ impl From<tower_sessions::session::Error> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AppError::DbError(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+        let (status, error_msg) = match self {
+            AppError::DbError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "internal", "message": e.to_string() }),
+            ),
+            AppError::InternalError(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "internal", "message": msg }),
+            ),
+            AppError::ValidationError { field, message } => (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "validation", "field": field, "message": message }),
+            ),
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, json!({ "error": "not_found", "message": msg })),
         };
-
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, Json(error_msg)).into_response()
     }
 }

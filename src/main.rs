@@ -5,7 +5,6 @@ use axum::{
 };
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
 use std::sync::Arc;
-use std::time::Duration;
 use tower_sessions::{SessionManagerLayer, MemoryStore};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -39,6 +38,11 @@ async fn init_db(pool: &SqlitePool) -> std::result::Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    // 为 rank 字段创建索引以优化排序性能
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_rank ON users(rank)")
+        .execute(pool)
+        .await?;
 
     // 管理员表
     sqlx::query(
@@ -112,17 +116,17 @@ async fn main() -> std::io::Result<()> {
     // 2. 初始化日志
     log::init_logging(&config);
 
-    // 创建数据目录
+    // 3. 创建数据目录
     if let Some(parent) = std::path::Path::new(DB_PATH).parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
-    // 连接 SQLite 数据库
+    // 4. 连接 SQLite 数据库
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| format!("sqlite://{}", DB_PATH));
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.database.max_connections as u32)
         .connect(&db_url)
         .await
         .expect("Failed to connect to SQLite");
@@ -133,24 +137,39 @@ async fn main() -> std::io::Result<()> {
 
     ensure_admin(&pool).await;
 
-    // 初始化全局共享的 HTTP 客户端
+    // 5. 初始化全局共享的 HTTP 客户端
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(config.subscription.fetch_timeout_secs))
         .pool_max_idle_per_host(5)
         .build()
         .expect("Failed to create reqwest client");
 
-    let state = Arc::new(AppState { db: pool, client });
+    // 6. 创建应用状态
+    let state = Arc::new(AppState::from_config(
+        pool,
+        client,
+        config.subscription.fetch_timeout_secs,
+        config.subscription.concurrent_limit,
+        config.subscription.max_links_per_user,
+        config.subscription.max_users,
+    ));
+
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
 
-    tracing::info!("Starting VSS SubStore at http://{} with SQLite", bind_addr);
+    tracing::info!(
+        server = %bind_addr,
+        db_max_connections = config.database.max_connections,
+        fetch_timeout = config.subscription.fetch_timeout_secs,
+        concurrent_limit = config.subscription.concurrent_limit,
+        "Starting VSS SubStore"
+    );
 
-    // 配置 Session 中间件
+    // 7. 配置 Session 中间件
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(config.server.cookie_secure);
 
-    // 构建路由
+    // 8. 构建路由
     let app = Router::new()
         // 静态文件
         .nest_service("/static", ServeDir::new("web"))
@@ -176,7 +195,7 @@ async fn main() -> std::io::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    // 启动服务器
+    // 9. 启动服务器
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     axum::serve(listener, app).await
 }

@@ -9,9 +9,24 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # 服务器配置
+      - HOST=0.0.0.0
+      - PORT=8080
+      - COOKIE_SECURE=false
+      # 管理员账户
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=admin
+      # 数据库配置
       - DATABASE_URL=sqlite:///app/data/substore.db
+      - DB_MAX_CONNECTIONS=5
+      # 日志配置
+      - LOG_FILE=app.log
+      - LOG_LEVEL=info
+      # 订阅配置
+      - FETCH_TIMEOUT_SECS=10
+      - CONCURRENT_LIMIT=10
+      - MAX_LINKS_PER_USER=100
+      - MAX_USERS=100
     volumes:
       - ./data:/app/data
     restart: unless-stopped
