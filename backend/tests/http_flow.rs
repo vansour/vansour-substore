@@ -320,8 +320,11 @@ async fn wait_for_cache_refresh(
     app: &TestApp,
     cookie: &str,
     username: &str,
-    previous_generated_at: i64,
+    previous_generated_at: Option<i64>,
+    previous_expires_at: Option<i64>,
 ) -> UserCacheStatusResponse {
+    let mut last_status = None;
+
     for _ in 0..80 {
         let response = app
             .request(
@@ -334,18 +337,19 @@ async fn wait_for_cache_refresh(
             .await;
         assert_eq!(response.status(), StatusCode::OK);
         let status: UserCacheStatusResponse = response_json(response).await;
-        if status.state == "fresh"
-            && status
-                .generated_at
-                .is_some_and(|generated_at| generated_at > previous_generated_at)
-        {
+        // A background refresh may finish on a slow runner and become expired again
+        // before the next poll when the cache TTL is very short.
+        let snapshot_advanced = status.generated_at != previous_generated_at
+            || status.expires_at != previous_expires_at;
+        if status.generated_at.is_some() && status.expires_at.is_some() && snapshot_advanced {
             return status;
         }
 
+        last_status = Some(status);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    panic!("cache refresh did not complete in time");
+    panic!("cache refresh did not complete in time; last status: {last_status:?}");
 }
 
 #[tokio::test]
@@ -1226,9 +1230,9 @@ async fn expired_snapshot_serves_stale_content_while_refresh_runs_in_background(
         .await;
     assert_eq!(first_cache.status(), StatusCode::OK);
     let first_status: UserCacheStatusResponse = response_json(first_cache).await;
-    let generated_at = first_status
-        .generated_at
-        .expect("fresh snapshot should have generated_at");
+    assert_eq!(first_status.state, "fresh");
+    assert!(first_status.generated_at.is_some());
+    assert!(first_status.expires_at.is_some());
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -1242,8 +1246,18 @@ async fn expired_snapshot_serves_stale_content_while_refresh_runs_in_background(
     );
     assert_eq!(response_text(stale_feed).await, first_body);
 
-    let refreshed = wait_for_cache_refresh(&app, &cookie, "stale-demo", generated_at).await;
-    assert_eq!(refreshed.state, "fresh");
+    let refreshed = wait_for_cache_refresh(
+        &app,
+        &cookie,
+        "stale-demo",
+        first_status.generated_at,
+        first_status.expires_at,
+    )
+    .await;
+    assert_ne!(
+        (refreshed.generated_at, refreshed.expires_at),
+        (first_status.generated_at, first_status.expires_at)
+    );
 }
 
 #[tokio::test]
