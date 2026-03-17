@@ -1,0 +1,132 @@
+name: reviewdog
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: reviewdog-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Setup reviewdog
+        uses: reviewdog/action-setup@d8edfce3dd5e1ec6978745e801f9c50b5ef80252 # v1.4.0
+        with:
+          reviewdog_version: v0.21.0
+
+      - name: Run rustfmt with reviewdog
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo fmt --all
+
+          if git diff --quiet --exit-code; then
+            exit 0
+          fi
+
+          git diff --no-ext-diff --color=never \
+            | reviewdog \
+                -name="rustfmt" \
+                -f=diff \
+                -f.diff.strip=1 \
+                -filter-mode=file \
+                -reporter=github-pr-review
+
+          echo "rustfmt found formatting differences."
+          exit 1
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Setup reviewdog
+        uses: reviewdog/action-setup@d8edfce3dd5e1ec6978745e801f9c50b5ef80252 # v1.4.0
+        with:
+          reviewdog_version: v0.21.0
+
+      - name: Run cargo clippy with reviewdog
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets --message-format=json -- -D warnings > clippy.json 2> clippy.stderr
+          status=$?
+          set -e
+
+          cat clippy.stderr
+
+          python3 .github/scripts/cargo_json_to_rdjsonl.py --tool-name clippy < clippy.json \
+            | reviewdog \
+                -name="clippy" \
+                -f=rdjsonl \
+                -filter-mode=added \
+                -reporter=github-pr-check
+
+          exit $status
+
+  clippy-wasm:
+    name: clippy-wasm
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Setup reviewdog
+        uses: reviewdog/action-setup@d8edfce3dd5e1ec6978745e801f9c50b5ef80252 # v1.4.0
+        with:
+          reviewdog_version: v0.21.0
+
+      - name: Run cargo clippy wasm target with reviewdog
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          cargo clippy -p submora-web --target wasm32-unknown-unknown --message-format=json -- -D warnings > clippy-wasm.json 2> clippy-wasm.stderr
+          status=$?
+          set -e
+
+          cat clippy-wasm.stderr
+
+          python3 .github/scripts/cargo_json_to_rdjsonl.py --tool-name clippy-wasm < clippy-wasm.json \
+            | reviewdog \
+                -name="clippy-wasm" \
+                -f=rdjsonl \
+                -filter-mode=added \
+                -reporter=github-pr-check
+
+          exit $status

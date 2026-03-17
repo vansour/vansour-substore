@@ -1,0 +1,16 @@
+[package]
+name = "submora-web"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+dioxus.workspace = true
+time = { version = "0.3", features = ["formatting"] }
+submora-core = { path = "../packages/core" }
+submora-shared = { path = "../packages/shared" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dioxus = { workspace = true, features = ["web", "router"] }
+gloo-net = { version = "0.6", features = ["json"] }
+serde.workspace = true
+web-sys = { version = "0.3", features = ["RequestCredentials"] }

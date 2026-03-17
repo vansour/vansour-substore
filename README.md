@@ -1,139 +1,216 @@
-# VSS SubStore — 多用户链接聚合器
+# Submora
 
-VSS SubStore 是一个使用 Rust (Axum) 开发的轻量级、高性能的多用户链接聚合服务。
-它可将多个网页的正文抓取并合并为纯文本，以便在客户端或其他服务中消费。
+GitHub: https://github.com/vansour/Submora
 
----
+`Submora` 是一个面向多用户订阅聚合场景的 Rust 项目。仓库现已完成重写阶段十一：前端使用 Dioxus `0.7.3`，后端使用 Axum `0.8.8`，统一运行时在阶段十显式代理信任边界与 SSRF DNS rebinding 防护的基础上，继续补齐边缘层安全响应头与公共聚合入口限流。
 
-## 主要特性 ✅
-- 多用户管理：创建、删除、排序用户
-- 链接聚合：为每个用户定义若干链接，访问 `/{username}` 返回按顺序合并的纯文本
-- 智能 HTML 解析：使用 `scraper` + DOM 遍历保留段落与换行、过滤 `<script>`/`<style>` 等标签
-- 管理后台：基于 Cookie 的 Session 认证，前端包含管理面板（`web/`）
-- 日志：控制台紧凑输出 + 文件 JSON 格式写入（每天轮转）
-- 持久化：SQLite（单文件数据库，零配置）
-- 容器友好：Dockerfile + `docker compose` 支持快速部署
+## 当前架构
 
----
+- 前端：`frontend`
+- 后端：`backend`
+- 共享协议：`packages/shared`
+- 共享校验与元信息：`packages/core`
+- 静态资源：`assets/`
+- 构建配置：`Dioxus.toml`
+- 阶段文档：`docs/rewrite/`
 
-## 快速开始（推荐：Docker / docker-compose） 🚀
-1. 构建并启动容器：
+目录树说明：
+
+```text
+.
+├── frontend/          # Dioxus 管理台
+├── backend/           # Axum 服务、公共聚合路由、管理 API
+├── packages/
+│   ├── core/          # 共享校验、元信息、纯 Rust 公共逻辑
+│   └── shared/        # 前后端共享请求/响应模型
+├── assets/            # 管理台静态样式等资源
+├── docs/rewrite/      # 重写阶段记录
+├── .github/workflows/ # CI / reviewdog / preview / release
+└── Makefile           # 常用开发命令入口
+```
+
+`packages/` 这里是 Rust 共享包目录，不是前端包管理器目录。
+
+## 阶段十一完成内容
+
+- 默认响应现在会统一附带安全响应头，包括 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 和 `Permissions-Policy`。
+- `GET /{username}` 公共聚合入口新增独立内存限流，与登录限流分开治理。
+- 公共限流继续沿用显式代理信任边界；默认只使用真实对端地址，只有在 `TRUST_PROXY_HEADERS=true` 时才会信任转发头。
+- 新增环境变量 `PUBLIC_MAX_REQUESTS` 和 `PUBLIC_WINDOW_SECS`，用于控制公共入口限流窗口。
+- 阶段十一新增测试覆盖默认安全头存在，以及公共入口连续请求超过阈值后返回 `429`。
+
+## 本地开发
+
+前提：
+
+- Rust stable
+- `wasm32-unknown-unknown` target
+- Dioxus CLI `0.7.3`
+
+安装示例：
 
 ```bash
-# 使用本地构建镜像并启动
+rustup target add wasm32-unknown-unknown
+cargo install dioxus-cli --version 0.7.3
+```
+
+后端开发：
+
+```bash
+cargo run -p submora
+```
+
+前端开发：
+
+```bash
+dx serve --platform web --package submora-web
+```
+
+生产构建前端并让 Axum 托管：
+
+```bash
+dx build --platform web --package submora-web --release
+cargo run -p submora
+```
+
+统一开发命令：
+
+```bash
+make check
+make test
+make clippy
+make clippy-wasm
+make e2e
+make serve
+make build
+```
+
+默认管理员账号：
+
+- 用户名：`admin`
+- 密码：`admin`
+
+## 分支与发布
+
+- 长期分支只保留 `main`。
+- 功能开发建议从 `main` 切 `feat/*`、`fix/*`、`hotfix/*` 分支，再通过 PR 合并。
+- PR 预览不走预览服务器，只会构建并推送 preview 镜像到 GHCR。
+- 正式发布通过 tag 触发，支持：
+  - `vMAJOR.MINOR.PATCH`
+  - `vMAJOR.MINOR.PATCH-rc.N`
+  - `vMAJOR.MINOR.PATCH-beta.N`
+
+## GitHub Actions
+
+当前仓库内置 4 组工作流：
+
+- `CI`
+  - 对 `main` 的 `push` 和 `pull_request` 运行。
+  - 执行 `fmt`、`check`、`clippy`、Rust tests 和 Playwright E2E。
+- `reviewdog`
+  - 对 `main` 的 PR 运行。
+  - 为 `rustfmt`、`clippy`、`clippy-wasm` 提供 PR 注释/检查反馈。
+- `preview`
+  - 对 `main` 的 PR 运行。
+  - 对同仓、非 draft PR 构建并推送 preview 镜像到 GHCR，并在 PR 中写回镜像 tag。
+  - 当前只发布 preview 镜像，不做环境部署。
+- `release`
+  - 在推送 `v*` tag 时运行。
+  - 校验 tag commit 来自 `main`，重新执行发布级校验，推送 GHCR 镜像，并创建 GitHub Release。
+
+## 容器部署
+
+`Dockerfile` 会在构建阶段同时生成：
+
+- `dist/` 的 Dioxus Web 产物
+- `submora` 二进制
+
+启动：
+
+```bash
 docker compose up -d --build
 ```
 
-2. 页面访问：
-- 管理后台： http://127.0.0.1:8080
-- 订阅合并流（文本）： http://127.0.0.1:8080/{username}
+默认对外：
 
-3. 默认管理员：
-- 用户名: `admin`
-- 密码: `admin`
+- 管理台：`http://127.0.0.1:8080`
+- 聚合路由：`http://127.0.0.1:8080/{username}`
 
-⚠️ 第一次启动请尽快登录并修改管理员用户名/密码（右上角 账号设置）。
+当前 [compose.yml](/root/github/Submora/compose.yml) 只保留了镜像、端口、数据卷、重启策略和日志配置；运行时环境变量默认使用：
 
----
+- `Dockerfile` 中的镜像默认值
+- `backend/src/config.rs` 内置默认值
 
-## 配置项（环境变量）⚙️
+如果你要覆盖这些默认值，直接在本地 `compose.yml` 增加 `environment:`，或通过 `docker compose --env-file ...` 提供环境变量即可。
 
-可用环境变量：
+## 常用环境变量
 
-- `ADMIN_USER` — 初始化管理员用户名（仅数据库为空时生效）
-- `ADMIN_PASSWORD` — 初始化管理员密码（仅数据库为空时生效）
-- `DATABASE_URL` — SQLite 数据库路径，示例：`sqlite:///app/data/substore.db`（容器默认）
-- `HOST` / `PORT` — 服务器监听地址和端口（默认 `0.0.0.0:8080`）
-- `COOKIE_SECURE` — Cookie 是否仅 HTTPS（默认 `false`）
-- `LOG_FILE` / `LOG_LEVEL` — 日志文件路径和级别
+- `HOST` / `PORT`
+- `WEB_DIST_DIR`
+- `DATABASE_URL`
+- `COOKIE_SECURE`
+- `SESSION_TTL_MINUTES`
+- `SESSION_CLEANUP_INTERVAL_SECS`
+- `TRUST_PROXY_HEADERS`
+- `LOGIN_MAX_ATTEMPTS`
+- `LOGIN_WINDOW_SECS`
+- `LOGIN_LOCKOUT_SECS`
+- `PUBLIC_MAX_REQUESTS`
+- `PUBLIC_WINDOW_SECS`
+- `CACHE_TTL_SECS`
+- `DB_MAX_CONNECTIONS`
+- `FETCH_TIMEOUT_SECS`
+- `DNS_CACHE_TTL_SECS`
+- `FETCH_HOST_OVERRIDES`
+- `CONCURRENT_LIMIT`
+- `MAX_LINKS_PER_USER`
+- `MAX_USERS`
+- `ADMIN_USER`
+- `ADMIN_PASSWORD`
+- `CORS_ALLOW_ORIGIN`
 
----
+其中很多变量都有安全默认值；`compose.yml` 默认不会显式覆盖它们。
 
-## 构建与本地运行（开发者）🛠️
-前提：安装 Rust (stable)
+## 关键接口
 
-本地运行步骤：
+- `GET /api/auth/csrf`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `PUT /api/auth/account`
+- `GET /api/users/{username}/diagnostics`
+- `GET /api/users/{username}/cache`
+- `POST /api/users/{username}/cache/refresh`
+- `DELETE /api/users/{username}/cache`
+- `GET /{username}`
 
-```bash
-# 运行服务（数据库会自动创建在 data/substore.db）
-cargo run --release
-```
-
----
-
-## Docker 使用建议 🔧
-- 容器内的数据目录挂载：把宿主机的 `./data` 挂载到容器 `/app/data` 以持久化数据库。
-- 建议使用反向代理（Nginx / Caddy）在生产环境提供 HTTPS；并将 cookie 设置为 secure。
-
-示例 `docker compose`：见 `compose.yml`（默认将 `data` 和 `logs` 映射到宿主机）。
-
----
-
-## HTTP API（管理/业务接口）📡
-所有管理接口需要先通过 Cookie 登录（前端登录会使用 `/api/auth/login`）。
-
-- POST /api/auth/login
-  - 请求体: `{ "username": "admin", "password": "admin" }`
-  - 登录成功后会设置 Cookie，用于后续管理接口。
-
-- POST /api/auth/logout — 退出登录。
-- GET /api/auth/me — 获取当前登录用户。
-- PUT /api/auth/account — 更新管理员用户名/密码。
-
-- GET /api/users — 返回按排序的用户名数组（需登录）。
-- POST /api/users — 创建用户，body: `{ "username": "foo" }`。
-- DELETE /api/users/{username} — 删除用户。
-- PUT /api/users/order — 更新用户顺序，body: `{ "order": ["u1","u2"] }`。
-- GET /api/users/{username}/links — 获取用户的订阅链接数组。
-- PUT /api/users/{username}/links — 更新用户的链接，body: `{ "links": ["https://a.com","https://b.com"] }`。
-
-- GET /{username} — **核心业务接口**，按用户配置的顺序并发抓取每个链接（client 超时 10s，默认并发 10）并返回合并后的纯文本（Content-Type: text/plain）。
-- GET /healthz — 健康检查 (HTTP 200 返回 `ok`)。
-
-示例：使用 curl 登录并访问管理接口
+## 校验命令
 
 ```bash
-# 登录并保存 cookie 到 cookies.txt
-curl -c cookies.txt -X POST -H "Content-Type: application/json" -d '{"username":"admin","password":"admin"}' http://127.0.0.1:8080/api/auth/login
-
-# 使用 cookie 请求用户列表
-curl -b cookies.txt http://127.0.0.1:8080/api/users
-
-# 获取某用户合并后的文本
-curl http://127.0.0.1:8080/example_user
+make check
+make test
+make clippy
+make clippy-wasm
+make e2e
 ```
 
----
+对应展开后为：
 
-## 前端（web UI）📱
-前端资源静态保存在 `web/` 目录。登录到管理后台后可以创建用户、配置每个用户的订阅链接、拖拽排序并删除用户。
+```bash
+cargo fmt --all -- --check
+cargo check --workspace
+cargo check -p submora-web --target wasm32-unknown-unknown
+cargo test -p submora-core -p submora
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p submora-web --target wasm32-unknown-unknown -- -D warnings
+npm run e2e
+```
 
----
+## 说明
 
-## 日志与监控 📊
-- 控制台输出（适合 Docker logs）：紧凑、彩色
-- 文件输出（JSON 格式，按天轮转）：路径由环境变量 `LOG_FILE` 指定（默认 `app.log`）。
-- 容器镜像拥有健康检查（`HEALTHCHECK` 依赖 `/healthz` 接口）。
-
----
-
-## 部署和安全建议 🔐
-- 在生产环境中：使用 HTTPS（例如 Nginx / Caddy 反向代理）并将 cookie 改为 secure。
-- SSRF 风险：应用会对所有配置的链接发起抓取请求，建议在防火墙层限制出站请求或使用网络策略来阻止访问内网地址。
-- 超时和并发限制：HTTP 客户端超时时间为 10s，默认并发数为 10。
-
----
-
-## 贡献与开发建议 🤝
-- 请在提交 PR 前确保代码通过 `cargo fmt` 和基本的 `cargo clippy` 检查。
-- 数据库表结构在启动时自动创建，无需迁移脚本。
-
----
-
-## 许可证
-本仓库当前没有添加许可证文件。若要发布或允许贡献者复用，请考虑添加合适的开源许可证（例如 MIT / Apache-2.0）。
-
----
-
-作者: vansour
-如果需要 README 中包含更多示例、API 细节或演示截图，请告诉我，我可以进一步补充。
+- 公共聚合路由仍是 `GET /{username}`，返回 `text/plain`。
+- 管理会话与 merged cache snapshot 都保存在 SQLite 中，可跨服务重启保留。
+- 写接口继续沿用阶段七启用的 CSRF 校验。
+- 过期 snapshot 现在会先返回旧值并在后台刷新，响应 header 的 `x-substore-cache` 可能出现 `hit`、`miss`、`stale` 和 `empty`。
+- `FETCH_HOST_OVERRIDES` 可用于显式静态解析上游 host，主要用于测试和内网联调；默认留空，不会改变公网抓取边界。
+- 当前 Rust 集成测试和 Playwright E2E 都使用本地 upstream fixture，不依赖公网可达性。
+- 阶段记录见 `docs/rewrite/stage-1-baseline.md` 到 `docs/rewrite/stage-11-edge-hardening.md`。

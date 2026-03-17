@@ -1,47 +1,33 @@
-[package]
-name = "vss-substore"
+[workspace]
+members = [
+    "backend",
+    "frontend",
+    "packages/shared",
+    "packages/core",
+]
+default-members = [
+    "backend",
+    "frontend",
+    "packages/shared",
+    "packages/core",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-# Axum web framework
-axum = "0.8"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
-tower-sessions = "0.15"
-
-# Session 配置
-rand = "0.10"
-
+[workspace.dependencies]
+axum = { version = "=0.8.8" }
+dioxus = { version = "=0.7.3", features = ["router"] }
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip", "brotli", "deflate", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
-
-# SQLite 数据库
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "json"] }
-
-# HTTP 客户端
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip", "brotli", "deflate", "stream"] }
-
-# HTML 解析
-scraper = "0.25"
-# ego-tree 由 scraper 间接引入，不需要显式声明
-url = "2.5"
-
-# 异步运行时
-futures = "0.3"
-
-# 日志
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "json", "migrate"] }
+tokio = { version = "1.50", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tower-sessions = "0.14"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
-tracing-appender = "0.2"
-
-# 工具
-uuid = { version = "1.22", features = ["v4", "serde"] }
-derive_more = { version = "2.1", features = ["display", "from"] }
-async-trait = "0.1"
-
-# 密码哈希
-argon2 = { version = "0.5", features = ["std"] }
-
-# 速率限制
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2.5"

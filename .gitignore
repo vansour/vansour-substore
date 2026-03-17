@@ -69,6 +69,7 @@ desktop.ini
 *.tmp
 *.temp
 /tmp/
+.tmp/
 
 # Coverage reports
 coverage/
@@ -79,3 +80,12 @@ tarpaulin-report.html
 *.backup
 *.bak
 *~
+
+# JavaScript / browser test artifacts
+node_modules/
+playwright-report/
+test-results/
+
+# Python cache
+__pycache__/
+*.pyc
